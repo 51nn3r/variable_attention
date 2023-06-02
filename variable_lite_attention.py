@@ -25,6 +25,10 @@ def _get_transpose_axes(dims_count):
     return [dim for dim in range(dims_count - 3)] + [dims_count - 2, dims_count - 3, dims_count - 1]
 
 
+def _get_transpose_last_axes(dims_count):
+    return [dim for dim in range(dims_count - 2)] + [dims_count - 1, dims_count - 2]
+
+
 def _build_attention_equation(rank, attn_axes):
     """Builds einsum equations for the attention computation.
 
@@ -52,11 +56,11 @@ def _build_attention_equation(rank, attn_axes):
     """
     target_notation = _CHR_IDX[:rank]
     # `batch_dims` includes the head dim.
-    batch_dims = tuple(np.delete(range(rank), attn_axes + (rank - 4,)))
+    batch_dims = tuple(np.delete(range(rank), attn_axes))
     letter_offset = rank
     source_notation = ""
     for i in range(rank):
-        if i in batch_dims or i == rank - 4:
+        if i in batch_dims:
             source_notation += target_notation[i]
         else:
             source_notation += _CHR_IDX[letter_offset]
@@ -67,6 +71,7 @@ def _build_attention_equation(rank, attn_axes):
         + [target_notation[i] for i in attn_axes]
         + [source_notation[i] for i in attn_axes]
     )
+
     dot_product_equation = "%s,%s->%s" % (
         source_notation,
         target_notation,
@@ -139,9 +144,9 @@ class VariableLiteAttention(Layer):
             self,
             num_heads,
             key_dim,
-            output_types=None,
-            output_steps=None,
-            output_depth=None,
+            out_types=None,
+            out_steps=None,
+            out_depth=None,
             value_dim=None,
             dropout=0.0,
             use_bias=True,
@@ -160,9 +165,9 @@ class VariableLiteAttention(Layer):
         self.supports_masking = True
         self._num_heads = num_heads
         self._key_dim = key_dim
-        self._output_types = output_types
-        self._output_steps = output_steps
-        self._output_depth = output_depth
+        self._output_types = out_types
+        self._output_steps = out_steps
+        self._output_depth = out_depth
         self._value_dim = value_dim if value_dim else key_dim
         self._dropout = dropout
         self._use_bias = use_bias
@@ -396,6 +401,7 @@ class VariableLiteAttention(Layer):
         einsum_equation2, bias_axes, output_rank = _build_proj_equation(
             free_dims, bound_dims=1, output_dims=len(output_shape2) - 1, common_axes=1
         )
+
         return core.EinsumDense(
             einsum_equation1,
             output_shape=_get_output_shape(output_rank - 1, output_shape1),
@@ -424,11 +430,13 @@ class VariableLiteAttention(Layer):
             self._attention_axes = tuple(range(1, rank - 4)) + tuple((rank - 3, rank - 1,))
         else:
             self._attention_axes = tuple(self._attention_axes)
+
         (
             self._dot_product_equation,
             self._combine_equation,
             attn_scores_rank,
         ) = _build_attention_equation(rank, attn_axes=self._attention_axes)
+
         norm_axes = tuple(
             range(
                 attn_scores_rank - len(self._attention_axes), attn_scores_rank
@@ -576,6 +584,7 @@ class VariableLiteAttention(Layer):
         if self._input_steps != self._output_steps:
             attention_output = self._conv_time_steps_dense1(attention_output)
             attention_output = self._conv_time_steps_dense2(attention_output)
+            attention_output = tf.transpose(attention_output, _get_transpose_last_axes(attention_output.shape.rank))
 
         if query_is_ragged:
             attention_output = tf.RaggedTensor.from_tensor(
